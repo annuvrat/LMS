@@ -1,0 +1,24 @@
+{
+  "name": "base",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "git": "^0.1.5",
+    "install": "^0.13.0",
+    "msnodesqlv8": "^4.2.1",
+    "mssql": "^11.0.1",
+    "nodemon": "^3.1.4",
+    "npm": "^10.8.2",
+    "tedious": "^18.3.0"
+  }
+}
