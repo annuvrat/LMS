@@ -48,17 +48,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// app.post('/request',async(req,res)=>{
-//   const{empl_code,start_date,end_date,reason}= req.body;
-//   try{
-//     const pool =await sql.connect(config1);
-//     .input('empl_code',sql.VarChar,empl_code)
-//     .input('start_date',sql.Date,start_date)
-//     .input('end_date',sql.Date,end_date)
-//     .input('reason',sql.VarChar,reason)
-//     .query('INSERT INTO [dbo].[M_EMPL_LEAVE] ([empl_code],[start_date
-//   }
-// })
+
 
 // Set the port and start the server
 const port = process.env.PORT || 3000;
