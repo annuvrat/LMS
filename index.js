@@ -1,10 +1,10 @@
 const express = require('express');
-// const sql = require('mssql/msnodesqlv8'); // Updated
+const sql = require('mssql/msnodesqlv8'); // Updated
 const cors = require('cors');
 
-// const config1 = require('./config1');
-// const config2 = require('./config2');
-app.use(express.static('public'))
+const config1 = require('./config1');
+const config2 = require('./config2');
+// app.use(express.static('public'))
 const app = express();
 app.use(cors());
 app.use(express.json());
