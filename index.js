@@ -1,14 +1,117 @@
 const express = require('express');
 const sql = require('mssql/msnodesqlv8'); // Updated
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 
 const config1 = require('./config1');
 const config2 = require('./config2');
-// app.use(express.static('public'))
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+
+const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
+
+// Middleware for authenticating JWT tokens
+const authenticateJWT = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+
+  if (!token) {
+    return res.status(401).json({ message: 'Access denied. No token provided.' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, jwtSecret);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification error:', err);
+    res.status(400).json({ message: 'Invalid token.' });
+  }
+};
+
+// Middleware to authorize employee with various designations
+const authorizeEmployee = (req, res, next) => {
+  const validDesignations = [
+    'Employee', 
+    'Software Engineer', 
+    'SDE', 
+    'Developer', 
+    'QA Engineer', 
+    'Support Engineer',
+    'Manager',
+    'Hr'
+  ];
+
+  if (!validDesignations.includes(req.user.designation)) {
+    return res.status(403).json({ message: 'Access denied. Not an authorized employee.' });
+  }
+
+  next();
+};
+
+// Middleware to authorize Manager role
+const authorizeManager = (req, res, next) => {
+  if (req.user.designation !== 'Manager') {
+    return res.status(403).json({ message: 'Access denied. Not a manager.' });
+  }
+  next();
+};
+
+// Middleware to authorize HR role
+const authorizeHR = (req, res, next) => {
+  if (req.user.designation !== 'HR') {
+    return res.status(403).json({ message: 'Access denied. Not HR.' });
+  }
+  next();
+};
+
+// Sample login endpoint
+app.post('/login', async (req, res) => {
+  const { empl_code, empl_pwd } = req.body;
+
+  if (!empl_code || !empl_pwd) {
+    return res.status(400).json({ message: 'Employee code and password are required.' });
+  }
+
+  try {
+    const pool = await sql.connect(config1);
+    const result = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('empl_pwd', sql.VarChar, empl_pwd)
+      .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @empl_code AND [empl_pwd] = @empl_pwd');
+
+    if (result.recordset.length > 0) {
+      const user = result.recordset[0];
+
+      // Debug: log the user object to ensure it contains the expected data
+      console.log('Retrieved User:', user);
+
+      const token = jwt.sign(
+        { empl_code: user.EMPL_CODE, designation: user.designation },
+        jwtSecret,
+        { expiresIn: '1h' }
+      );
+
+      // Debug: log the generated token
+      console.log('Generated Token:', token);
+
+      res.status(200).json({ message: 'Login successful', token, user });
+    } else {
+      res.status(401).json({ message: 'Invalid credentials' });
+    }
+  } catch (err) {
+    console.error('Error during login:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    sql.close();
+  }
+});
+
+
 
 // Basic route for testing
 app.get('/', (req, res) => {
@@ -27,120 +130,93 @@ app.get('/API', async (req, res) => {
   }
 });
 
+// Register endpoint
 app.post('/register', async (req, res) => {
   const { empl_code, employee_name, empl_pwd, designation } = req.body;
 
-  // Simple validation
   if (!empl_code || !employee_name || !empl_pwd || !designation) {
-      return res.status(400).json({ message: 'All fields are required.' });
+    return res.status(400).json({ message: 'All fields are required.' });
   }
 
   try {
-      // Connect to the database
-      let pool = await sql.connect(config1);
+    let pool = await sql.connect(config1);
 
-      // Check if the employee already exists
-      const checkUserQuery = `
-          SELECT * FROM USER_PASSWORD WHERE empl_code = @empl_code
-      `;
-      let checkUserRequest = pool.request();
-      checkUserRequest.input('empl_code', sql.VarChar, empl_code);
-      const userResult = await checkUserRequest.query(checkUserQuery);
+    const checkUserQuery = `SELECT * FROM USER_PASSWORD WHERE empl_code = @empl_code`;
+    let checkUserRequest = pool.request();
+    checkUserRequest.input('empl_code', sql.VarChar, empl_code);
+    const userResult = await checkUserRequest.query(checkUserQuery);
 
-      if (userResult.recordset.length > 0) {
-          return res.status(400).json({ message: 'Employee already exists.' });
-      }
+    if (userResult.recordset.length > 0) {
+      return res.status(400).json({ message: 'Employee already exists.' });
+    }
 
-      // Insert new employee into the USER_PASSWORD table
-      const insertUserQuery = `
-          INSERT INTO USER_PASSWORD (empl_code, employee_name, empl_pwd, designation)
-          VALUES (@empl_code, @employee_name, @empl_pwd, @designation)
-      `;
-      let insertUserRequest = pool.request();
-      insertUserRequest.input('empl_code', sql.VarChar, empl_code);
-      insertUserRequest.input('employee_name', sql.VarChar, employee_name);
-      insertUserRequest.input('empl_pwd', sql.VarChar, empl_pwd); // Storing plain text password for now
-      insertUserRequest.input('designation', sql.VarChar, designation);
+    const insertUserQuery = `
+      INSERT INTO USER_PASSWORD (empl_code, employee_name, empl_pwd, designation)
+      VALUES (@empl_code, @employee_name, @empl_pwd, @designation)
+    `;
+    let insertUserRequest = pool.request();
+    insertUserRequest.input('empl_code', sql.VarChar, empl_code);
+    insertUserRequest.input('employee_name', sql.VarChar, employee_name);
+    insertUserRequest.input('empl_pwd', sql.VarChar, empl_pwd);
+    insertUserRequest.input('designation', sql.VarChar, designation);
 
-      await insertUserRequest.query(insertUserQuery);
-
-      res.status(201).json({ message: 'Employee registered successfully.' });
+    await insertUserRequest.query(insertUserQuery);
+    res.status(201).json({ message: 'Employee registered successfully.' });
   } catch (error) {
-      console.error('Error registering employee:', error);
-      res.status(500).json({ message: 'Internal server error.' });
+    console.error('Error registering employee:', error);
+    res.status(500).json({ message: 'Internal server error.' });
   } finally {
-      sql.close(); // Close the database connection
+    sql.close();
   }
 });
 
 // Login endpoint
-const jwt = require('jsonwebtoken');
-const jwtSecret = 'your_jwt_secret'; // Replace with your actual secret key
+// app.post('/login', async (req, res) => {
+//   const { empl_code, empl_pwd } = req.body;
 
-app.post('/login', async (req, res) => {
-  const { empl_code, empl_pwd } = req.body;
+//   if (!empl_code || !empl_pwd) {
+//     return res.status(400).json({ message: 'Employee code and password are required.' });
+//   }
 
-  try {
-    const pool = await sql.connect(config1);
-    const result = await pool.request()
-      .input('empl_code', sql.VarChar, empl_code)
-      .input('empl_pwd', sql.VarChar, empl_pwd)
-      .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @empl_code AND [empl_pwd] = @empl_pwd');
+//   try {
+//     const pool = await sql.connect(config1);
+//     const result = await pool.request()
+//       .input('empl_code', sql.VarChar, empl_code)
+//       .input('empl_pwd', sql.VarChar, empl_pwd)
+//       .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @empl_code AND [empl_pwd] = @empl_pwd');
 
-    if (result.recordset.length > 0) {
-      const user = result.recordset[0];
+//     if (result.recordset.length > 0) {
+//       const user = result.recordset[0];
 
-      // Generate JWT token
-      const token = jwt.sign(
-        { empl_code: user.empl_code, designation: user.designation },
-        jwtSecret,
-        { expiresIn: '1h' }
-      );
+//       // Debugging logs
+//       console.log('Retrieved User:', user);
 
-      // Respond with token and user info
-      res.status(200).json({ message: 'Login successful', token, user });
-    } else {
-      res.status(401).json({ message: 'Invalid credentials' });
-    }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Internal server error' });
-  } finally {
-    sql.close();
-  }
-});
+//       const token = jwt.sign(
+//         { empl_code: user.EMPL_CODE , designation: user.designation },
+//         jwtSecret,
+//         { expiresIn: '1h' }
+//       );
 
+//       // Debugging logs
+//       console.log('Generated Token:', token);
 
-const authenticate = async (req, res, next) => {
-  const { empl_code, empl_pwd } = req.body;
+//       // Decode the token locally for verification
+//       const decoded = jwt.verify(token, jwtSecret);
+//       console.log('Decoded Token Payload:', decoded);
 
-  if (!empl_code || !empl_pwd) {
-    return res.status(400).json({ error: 'Employee code and password are required' });
-  }
-
-  try {
-    const pool = await sql.connect(config);
-    const result = await pool.request()
-      .input('empl_code', sql.VarChar, empl_code)
-      .input('empl_pwd', sql.VarChar, empl_pwd)
-      .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [EMPL_CODE] = @empl_code AND [EMPL_PWD] = @empl_pwd');
-    
-    if (result.recordset.length > 0) {
-      req.user = result.recordset[0]; // Save user info in the request
-      next();
-    } else {
-      res.status(401).json({ error: 'Unauthorized' });
-    }
-  } catch (err) {
-    console.error('Authentication error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    sql.close();
-  }
-};
-
+//       res.status(200).json({ message: 'Login successful', token, user });
+//     } else {
+//       res.status(401).json({ message: 'Invalid credentials' });
+//     }
+//   } catch (err) {
+//     console.error('Error during login:', err);
+//     res.status(500).json({ message: 'Internal server error' });
+//   } finally {
+//     await sql.close();
+//   }
+// });
 // API for leave types
-app.get('/leave-types', async (req, res) => {
+app.get('/leave-types', authenticateJWT, authorizeEmployee, async (req, res) => {
   try {
     const pool = await sql.connect(config1);
     const result = await pool.request().query('SELECT * FROM LEAVE_TYPE');
@@ -154,23 +230,15 @@ app.get('/leave-types', async (req, res) => {
 });
 
 // API for submitting leave requests (requires authentication)
-app.post('/request-leave', async (req, res) => {
+app.post('/request-leave', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code, leave_type_id, start_date, end_date, reason } = req.body;
 
-  // Check if any required field is missing or empty
-  if (
-    !empl_code?.trim() ||
-    !leave_type_id ||
-    !start_date?.trim() ||
-    !end_date?.trim() ||
-    !reason?.trim()
-  ) {
-    return res.status(400).json({ error: "All fields are required." });
+  if (!empl_code || !leave_type_id || !start_date || !end_date || !reason) {
+    return res.status(400).json({ error: 'All fields are required.' });
   }
 
-  // Check if start_date is before end_date
   if (new Date(start_date) > new Date(end_date)) {
-    return res.status(400).json({ error: "End date must be after start date." });
+    return res.status(400).json({ error: 'End date must be after start date.' });
   }
 
   const durationDays = Math.ceil((new Date(end_date) - new Date(start_date)) / (1000 * 60 * 60 * 24)) + 1;
@@ -178,28 +246,24 @@ app.post('/request-leave', async (req, res) => {
   try {
     const pool = await sql.connect(config1);
 
-    // Check if the leave type exists
     const leaveTypeResult = await pool.request()
       .input('leave_type_id', sql.Int, leave_type_id)
       .query('SELECT [NAME] FROM [dbo].[LEAVE_TYPE] WHERE [ID] = @leave_type_id');
 
     if (leaveTypeResult.recordset.length === 0) {
-      return res.status(400).json({ error: "Invalid leave type ID." });
+      return res.status(400).json({ error: 'Invalid leave type ID.' });
     }
 
     const leaveTypeName = leaveTypeResult.recordset[0].NAME;
-
-    // Determine if HR approval is needed based on leave type and duration
     const needsHRApproval = leaveTypeName === 'SL' && durationDays > 3;
 
-    // Insert leave request into the database
     await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .input('leave_type_id', sql.Int, leave_type_id)
       .input('start_date', sql.Date, start_date)
       .input('end_date', sql.Date, end_date)
       .input('reason', sql.NVarChar, reason)
-      .input('status', sql.VarChar,  'Pending' )
+      .input('status', sql.VarChar, 'Pending')
       .input('duration', sql.VarChar, `${durationDays} days`)
       .input('approved_by_manager', sql.Bit, false)
       .input('approved_by_hr', sql.Bit, needsHRApproval)
@@ -209,111 +273,113 @@ app.post('/request-leave', async (req, res) => {
         VALUES (@empl_code, @leave_type_id, @start_date, @end_date, @reason, @status, @duration, @approved_by_manager, @approved_by_hr)
       `);
 
-    res.status(201).json({ message: "Leave request submitted successfully." });
+    res.status(201).json({ message: 'Leave request submitted successfully.' });
   } catch (err) {
     console.error('Error submitting leave request:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.post('/approve-leave/:id', async (req, res) => {
+// API for approving leave requests by Manager or HR
+app.post('/approve-leave/:id', authenticateJWT, async (req, res) => {
   const leaveRequestId = parseInt(req.params.id, 10);
-  const { approve_by, manager_name, hr_name } = req.body;
+  const { approve_by } = req.body;
+  const approverId = req.user.empl_code; // Use empl_code from JWT
+  const approverRole = req.user.designation; // Get role from JWT
 
+  // Debugging Logs
+  console.log(`Leave Request ID: ${leaveRequestId}`);
+  console.log(`Approve By: ${approve_by}`);
+  console.log(`Approver ID: ${approverId}`);
+  console.log(`Approver Role: ${approverRole}`);
+
+  // Validate input
   if (!leaveRequestId || !approve_by) {
     return res.status(400).json({ error: 'Leave request ID and approver role are required.' });
+  }
+
+  if (approve_by !== 'Manager' && approve_by !== 'HR') {
+    return res.status(400).json({ error: 'Invalid approver role. Use "Manager" or "HR".' });
   }
 
   try {
     const pool = await sql.connect(config1);
 
-    // Retrieve leave request
+    // Check if the leave request exists and validate details
     const leaveRequestResult = await pool.request()
-      .input('id', sql.Int, leaveRequestId)
-      .query('SELECT * FROM [dbo].[LEAVE_REQUEST] WHERE [ID] = @id');
+      .input('leaveRequestId', sql.Int, leaveRequestId)
+      .query('SELECT * FROM [dbo].[LEAVE_REQUEST] WHERE [ID] = @leaveRequestId');
 
     if (leaveRequestResult.recordset.length === 0) {
       return res.status(404).json({ error: 'Leave request not found.' });
     }
 
     const leaveRequest = leaveRequestResult.recordset[0];
-    let updateFields = {};
-    
-    if (approve_by === 'manager') {
-      if (!manager_name) {
-        return res.status(400).json({ error: 'Manager name is required.' });
-      }
-
-      const managerResult = await pool.request()
-        .input('name', sql.NVarChar, manager_name)
-        .query('SELECT [id] FROM [dbo].[MANAGER] WHERE [name] = @name');
-
-      if (managerResult.recordset.length === 0) {
-        return res.status(400).json({ error: 'Manager not found.' });
-      }
-
-      const managerId = managerResult.recordset[0].id;
-      updateFields = {
-        approved_by_manager: true,
-        manager_id: managerId,
-        approved_by_manager_name: manager_name
-      };
-      
-    } else if (approve_by === 'hr') {
-      if (!hr_name) {
-        return res.status(400).json({ error: 'HR name is required.' });
-      }
-
-      const hrResult = await pool.request()
-        .input('name', sql.NVarChar, hr_name)
-        .query('SELECT [id] FROM [dbo].[HR] WHERE [name] = @name');
-
-      if (hrResult.recordset.length === 0) {
-        return res.status(400).json({ error: 'HR not found.' });
-      }
-
-      const hrId = hrResult.recordset[0].id;
-      updateFields = {
-        approved_by_hr: true,
-        hr_id: hrId,
-        approved_by_hr_name: hr_name
-      };
-
-    } else {
-      return res.status(400).json({ error: 'Invalid approver role.' });
+    if (!leaveRequest.START_DATE || !leaveRequest.END_DATE || !leaveRequest.REASON) {
+      return res.status(400).json({ error: 'Improper details. Please resubmit the leave request.' });
     }
 
-    // Update leave request
-    await pool.request()
-      .input('id', sql.Int, leaveRequestId)
-      .input('status', sql.VarChar, (updateFields.approved_by_manager && updateFields.approved_by_hr) ? 'Approved' : 'Pending')
-      .input('approved_by_manager', sql.Bit, updateFields.approved_by_manager || false)
-      .input('approved_by_hr', sql.Bit, updateFields.approved_by_hr || false)
-      .input('manager_id', sql.Int, updateFields.manager_id || null)
-      .input('hr_id', sql.Int, updateFields.hr_id || null)
-      .input('approved_by_manager_name', sql.NVarChar, updateFields.approved_by_manager_name || null)
-      .input('approved_by_hr_name', sql.NVarChar, updateFields.approved_by_hr_name || null)
-      .query(`UPDATE [dbo].[LEAVE_REQUEST]
-              SET [STATUS] = @status,
-                  [APPROVED_BY_MANAGER] = @approved_by_manager,
-                  [APPROVED_BY_HR] = @approved_by_hr,
-                  [manager_id] = @manager_id,
-                  [hr_id] = @hr_id,
-                  [approved_by_manager_name] = @approved_by_manager_name,
-                  [approved_by_hr_name] = @approved_by_hr_name
-              WHERE [ID] = @id`);
+    let approverName = '';
+    let updateQuery = '';
 
-    res.status(200).json({ message: 'Leave request updated successfully.' });
+    if (approve_by === 'Manager') {
+      if (approverRole !== 'Manager') {
+        return res.status(403).json({ error: 'Access denied. Not a manager.' });
+      }
+
+      // Fetch manager name using approverId from the USER_PASSWORD table
+      const managerResult = await pool.request()
+        .input('emplCode', sql.VarChar, approverId)
+        .query('SELECT employee_name FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @emplCode');
+
+      if (managerResult.recordset.length === 0) {
+        return res.status(404).json({ error: 'Manager not found.' });
+      }
+      approverName = managerResult.recordset[0].employee_name;
+
+      updateQuery = `
+        UPDATE [dbo].[LEAVE_REQUEST]
+        SET [APPROVED_BY_MANAGER] = 1, [approved_by_manager_name] = @approverName, [STATUS] = 'Approved by Manager', [manager_id] = @approverId
+        WHERE [ID] = @leaveRequestId
+      `;
+    } else if (approve_by === 'HR') {
+      if (approverRole !== 'HR') {
+        return res.status(403).json({ error: 'Access denied. Not HR.' });
+      }
+
+      // Fetch HR name using approverId from the USER_PASSWORD table
+      const hrResult = await pool.request()
+        .input('emplCode', sql.VarChar, approverId)
+        .query('SELECT employee_name FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @emplCode');
+
+      if (hrResult.recordset.length === 0) {
+        return res.status(404).json({ error: 'HR not found.' });
+      }
+      approverName = hrResult.recordset[0].employee_name;
+
+      updateQuery = `
+        UPDATE [dbo].[LEAVE_REQUEST]
+        SET [APPROVED_BY_HR] = 1, [approved_by_hr_name] = @approverName, [STATUS] = 'Approved by HR', [hr_id] = @approverId
+        WHERE [ID] = @leaveRequestId
+      `;
+    }
+
+    // Update the leave request approval status, approver name, and approver ID
+    await pool.request()
+      .input('leaveRequestId', sql.Int, leaveRequestId)
+      .input('approverName', sql.NVarChar, approverName)
+      .input('approverId', sql.VarChar, approverId)
+      .query(updateQuery);
+
+    res.status(200).json({ message: `Leave request approved by ${approve_by}.` });
   } catch (err) {
     console.error('Error approving leave request:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
-// Set the port and start the server
+// Start the server
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
-
-module.exports = app;

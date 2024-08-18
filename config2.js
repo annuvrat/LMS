@@ -1,10 +1,8 @@
-require('dotenv').config();
-
 const config2 = {
-  user: process.env.sa,
-  password: process.env.annuvrat,
-  server: process.env.ANNUVRAT,
-  database: process.env.DHN_MASTER,
+  user: 'sa',
+  password: 'annuvrat',
+  server: 'ANNUVRAT',
+  database: 'DHN_MASTER',
   options: {
     instanceName: 'SQLEXPRESS',
     trustedServerCertificate: true,

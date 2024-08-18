@@ -1,11 +1,8 @@
-
-require('dotenv').config();
-
 const config1 = {
-  user: process.env.sa,
-  password: process.env.annuvrat,
-  server: process.env.ANNUVRAT,
-  database: process.env.LeaveAnalysisDashboard,
+  user: 'sa',
+  password: 'annuvrat',
+  server: 'ANNUVRAT',
+  database: 'LeaveAnalysisDashboard',
   options: {
     instanceName: 'SQLEXPRESS',
     trustedServerCertificate: true,
