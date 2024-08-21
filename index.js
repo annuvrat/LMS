@@ -1,5 +1,5 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); 
+const sql = require('mssql/msnodesqlv8'); // Updated
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
@@ -12,7 +12,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-const jwtSecret = 'your_jwt_secret';
+const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
 
 // Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
