@@ -69,7 +69,7 @@ const authorizeHR = (req, res, next) => {
   next();
 };
 
-// Sample login endpoint
+//  login endpoint
 app.post('/login', async (req, res) => {
   const { empl_code, empl_pwd } = req.body;
 
