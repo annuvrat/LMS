@@ -1,5 +1,5 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); // Updated
+const sql = require('mssql/msnodesqlv8'); 
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
