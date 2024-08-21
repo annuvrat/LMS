@@ -14,7 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const jwtSecret = 'your_jwt_secret'; 
 
-// Middleware for authenticating JWT tokens
+
 const authenticateJWT = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
