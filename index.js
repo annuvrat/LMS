@@ -1,5 +1,5 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); 
+const sql = require('mssql/msnodesqlv8'); // Updated
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
@@ -12,9 +12,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-const jwtSecret = 'your_jwt_secret'; 
+const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
 
-
+// Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
@@ -69,7 +69,7 @@ const authorizeHR = (req, res, next) => {
   next();
 };
 
-//  login endpoint
+// Sample login endpoint
 app.post('/login', async (req, res) => {
   const { empl_code, empl_pwd } = req.body;
 
@@ -375,6 +375,54 @@ app.post('/approve-leave/:id', authenticateJWT, async (req, res) => {
   } catch (err) {
     console.error('Error approving leave request:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+
+
+const leaveEntitlements = {
+  'SL': 12, // Sick Leave
+  'CL': 15, // Casual Leave
+  'EL': 20  // Earned Leave
+};
+
+app.get('/leave-balance', authenticateJWT, async (req, res) => {
+  const emplCode = req.user.empl_code;
+
+  try {
+      const leaveTakenQuery = `
+          SELECT lt.NAME AS leaveTypeName, SUM(CAST(PARSENAME(REPLACE(lr.DURATION, ' days', ''), 1) AS int)) AS leavesTaken
+          FROM LEAVE_REQUEST lr
+          INNER JOIN LEAVE_TYPE lt ON lr.LEAVE_TYPE_ID = lt.ID
+          WHERE lr.EMPL_CODE = @emplCode 
+          AND lr.STATUS IN ('Approved', 'Approved by Manager', 'Approved by HR')
+          GROUP BY lt.NAME;
+      `;
+
+      const pool = await sql.connect(config1);
+      const leaveTakenResult = await pool.request()
+          .input('emplCode', sql.VarChar, emplCode)
+          .query(leaveTakenQuery);
+
+      const leaveTakenData = leaveTakenResult.recordset;
+      console.log('Leave Taken Data:', leaveTakenData);
+
+      const leaveBalance = Object.keys(leaveEntitlements).map(leaveType => {
+          const taken = leaveTakenData.find(l => l.leaveTypeName === leaveType);
+          const leavesTaken = taken ? taken.leavesTaken : 0;
+          const totalLeaves = leaveEntitlements[leaveType];
+          return {
+              leaveType,
+              totalLeaves,
+              leavesTaken,
+              remainingLeaves: totalLeaves - leavesTaken
+          };
+      });
+
+      res.json(leaveBalance);
+  } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
