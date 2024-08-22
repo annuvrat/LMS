@@ -12,7 +12,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
+const jwtSecret = 'your_jwt_secret'; 
 
 // Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
