@@ -1,8 +1,10 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); 
+const sql = require('mssql/msnodesqlv8'); // Updated
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-
+const multer = require('multer');
+const ExcelJS = require('exceljs');
+// const upload = require('./LMS/uploadMiddleware')
 const config1 = require('./config1');
 const config2 = require('./config2');
 
@@ -12,8 +14,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-const jwtSecret = 'your_jwt_secret'; 
+const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
 
+// Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
@@ -35,11 +38,11 @@ const authenticateJWT = (req, res, next) => {
 // Middleware to authorize employee with various designations
 const authorizeEmployee = (req, res, next) => {
   const validDesignations = [
-    'Employee', 
-    'Software Engineer', 
-    'SDE', 
-    'Developer', 
-    'QA Engineer', 
+    'Employee',
+    'Software Engineer',
+    'SDE',
+    'Developer',
+    'QA Engineer',
     'Support Engineer',
     'Manager',
     'Hr'
@@ -67,6 +70,10 @@ const authorizeHR = (req, res, next) => {
   }
   next();
 };
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
 
 // Sample login endpoint
 app.post('/login', async (req, res) => {
@@ -377,19 +384,19 @@ app.post('/approve-leave/:id', authenticateJWT, async (req, res) => {
   }
 });
 
-
-
 const leaveEntitlements = {
   'SL': 12, // Sick Leave
   'CL': 15, // Casual Leave
-  'EL': 20  // Earned Leave
+  'EL': 20, // Earned Leave
+  'PL': 20, // Privilege Leave (example)
+  'WP': 12  // Work from Home (example)
 };
 
 app.get('/leave-balance', authenticateJWT, async (req, res) => {
   const emplCode = req.user.empl_code;
 
   try {
-      const leaveTakenQuery = `
+    const leaveTakenQuery = `
           SELECT lt.NAME AS leaveTypeName, SUM(CAST(PARSENAME(REPLACE(lr.DURATION, ' days', ''), 1) AS int)) AS leavesTaken
           FROM LEAVE_REQUEST lr
           INNER JOIN LEAVE_TYPE lt ON lr.LEAVE_TYPE_ID = lt.ID
@@ -398,34 +405,270 @@ app.get('/leave-balance', authenticateJWT, async (req, res) => {
           GROUP BY lt.NAME;
       `;
 
-      const pool = await sql.connect(config1);
-      const leaveTakenResult = await pool.request()
-          .input('emplCode', sql.VarChar, emplCode)
-          .query(leaveTakenQuery);
+    const leaveBalanceQuery = `
+          SELECT lt.NAME AS leaveTypeName, ISNULL(lb.BALANCE, 0) AS balance
+          FROM LEAVE_TYPE lt
+          LEFT JOIN LEAVE_BALANCE lb ON lt.ID = lb.LEAVE_TYPE_ID AND lb.EMPL_CODE = @emplCode;
+      `;
 
-      const leaveTakenData = leaveTakenResult.recordset;
-      console.log('Leave Taken Data:', leaveTakenData);
+    const pool = await sql.connect(config1);
 
-      const leaveBalance = Object.keys(leaveEntitlements).map(leaveType => {
-          const taken = leaveTakenData.find(l => l.leaveTypeName === leaveType);
-          const leavesTaken = taken ? taken.leavesTaken : 0;
-          const totalLeaves = leaveEntitlements[leaveType];
-          return {
-              leaveType,
-              totalLeaves,
-              leavesTaken,
-              remainingLeaves: totalLeaves - leavesTaken
-          };
-      });
+    // Fetch leave taken data
+    const leaveTakenResult = await pool.request()
+      .input('emplCode', sql.VarChar, emplCode)
+      .query(leaveTakenQuery);
+    const leaveTakenData = leaveTakenResult.recordset;
 
-      res.json(leaveBalance);
+    // Fetch leave balance data
+    const leaveBalanceResult = await pool.request()
+      .input('emplCode', sql.VarChar, emplCode)
+      .query(leaveBalanceQuery);
+    const leaveBalanceData = leaveBalanceResult.recordset;
+
+    // Calculate remaining leaves
+    const leaveBalance = leaveBalanceData.map(balance => {
+      const taken = leaveTakenData.find(l => l.leaveTypeName === balance.leaveTypeName);
+      const leavesTaken = taken ? taken.leavesTaken : 0;
+      const totalLeaves = leaveEntitlements[balance.leaveTypeName] || 0;
+      return {
+        leaveType: balance.leaveTypeName,
+        totalLeaves,
+        leavesTaken: leavesTaken, // from LEAVE_REQUEST table
+        remainingLeaves: balance.balance - leavesTaken // Adjust based on balance and taken
+      };
+    });
+
+    res.json(leaveBalance);
   } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Internal server error', details: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
+
+
+app.post('/adjust-leave-balance', authenticateJWT, authorizeManager, async (req, res) => {
+  const { emplCode, leaveTypeId, adjustment, reason } = req.body;
+
+  try {
+    const pool = await sql.connect(config1);
+
+    // Check if leave balance record exists
+    const checkBalanceQuery = `
+          SELECT * FROM LEAVE_BALANCE 
+          WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
+      `;
+    const checkBalanceResult = await pool.request()
+      .input('emplCode', sql.VarChar, emplCode)
+      .input('leaveTypeId', sql.Int, leaveTypeId)
+      .query(checkBalanceQuery);
+
+    if (checkBalanceResult.recordset.length === 0) {
+      return res.status(404).json({ error: "Leave balance record not found." });
+    }
+
+    // Adjust leave balance and leaves taken
+    const adjustLeaveBalanceQuery = `
+          UPDATE LEAVE_BALANCE
+          SET BALANCE = BALANCE + @adjustment,
+              LEAVES_TAKEN = LEAVES_TAKEN + @adjustment
+          WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
+      `;
+    await pool.request()
+      .input('adjustment', sql.Int, adjustment)
+      .input('emplCode', sql.VarChar, emplCode)
+      .input('leaveTypeId', sql.Int, leaveTypeId)
+      .query(adjustLeaveBalanceQuery);
+
+    res.status(200).json({ message: 'Leave balance adjusted successfully.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.post('/bulk-upload-leave', authenticateJWT, upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  try {
+    await workbook.xlsx.load(req.file.buffer);
+
+    const worksheet = workbook.worksheets[0];
+    const rows = worksheet.getSheetValues(); // This gets all rows as an array
+
+    const leaveData = rows.slice(1).map(row => ({
+      empl_code: row[1], // Adjust indices based on your sheet
+      leave_type: row[2],
+      leave_duration: row[3],
+    }));
+
+    // Connect to your database
+    const pool = await sql.connect(config1);
+
+    // Start a transaction
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    try {
+      // Loop through the leave data and update the database
+      for (const leave of leaveData) {
+        const { empl_code, leave_type, leave_duration } = leave;
+
+        // Fetch the leave type ID
+        const leaveTypeResult = await transaction.request()
+          .input('name', sql.VarChar, leave_type)
+          .query('SELECT ID FROM LEAVE_TYPE WHERE NAME = @name');
+        const leaveTypeId = leaveTypeResult.recordset[0]?.ID;
+
+        if (!leaveTypeId) {
+          throw new Error(`Leave type ${leave_type} not found`);
+        }
+
+        // Update the leave balance
+        await transaction.request()
+          .input('empl_code', sql.VarChar, empl_code)
+          .input('leave_type_id', sql.Int, leaveTypeId)
+          .input('leave_duration', sql.Int, leave_duration)
+          .query(`
+                      IF EXISTS (SELECT 1 FROM LEAVE_BALANCE WHERE EMPL_CODE = @empl_code AND LEAVE_TYPE_ID = @leave_type_id)
+                      BEGIN
+                          UPDATE LEAVE_BALANCE
+                          SET BALANCE = BALANCE + @leave_duration
+                          WHERE EMPL_CODE = @empl_code AND LEAVE_TYPE_ID = @leave_type_id
+                      END
+                      ELSE
+                      BEGIN
+                          INSERT INTO LEAVE_BALANCE (EMPL_CODE, LEAVE_TYPE_ID, BALANCE)
+                          VALUES (@empl_code, @leave_type_id, @leave_duration)
+                      END
+                  `);
+      }
+
+      // Commit the transaction
+      await transaction.commit();
+      res.json({ message: 'Bulk upload successful' });
+    } catch (err) {
+      await transaction.rollback();
+      res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to process the Excel file', details: err.message });
+  }
+});
+
+
+app.get('/api/calendar', async (req, res) => {
+  try {
+      // Create a direct connection to the database
+      const pool = await sql.connect(config1);
+      
+      // Execute the query
+      const result = await pool.request().query(`
+          SELECT
+              LR.leave_id AS id,
+              LR.start_date AS start,
+              LR.end_date AS end_date,
+              LT.leave_type AS title,
+              UP.employee_name AS employee_name
+          FROM LEAVE_REQUEST LR
+          JOIN LEAVE_TYPE LT ON LR.leave_type_id = LT.leave_type_id
+          JOIN USER_PASSWORD UP ON LR.empl_code = UP.empl_code
+          WHERE LR.start_date >= GETDATE()
+          ORDER BY LR.start_date;
+      `);
+      
+      // Send the result as JSON
+      res.json(result.recordset);
+      
+      // Close the database connection
+      sql.close();
+  } catch (error) {
+      console.error('Error fetching calendar data:', error); // Detailed error logging
+      res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+// Handle errors and close the database connection on app close
+process.on('SIGINT', async () => {
+  try {
+      await sql.close();
+      process.exit(0);
+  } catch (err) {
+      console.error('Error closing the database connection:', err);
+      process.exit(1);
+  }
+});
+// Handle errors and close the database connection on app close
+process.on('SIGINT', async () => {
+  try {
+      await sql.close();
+      process.exit(0);
+  } catch (err) {
+      console.error('Error closing the database connection:', err);
+      process.exit(1);
+  }
+});
+
+// Handle errors and close the database connection on app close
+process.on('SIGINT', async () => {
+  try {
+      await sql.close();
+      process.exit(0);
+  } catch (err) {
+      console.error('Error closing the database connection:', err);
+      process.exit(1);
+  }
+});
+
+
+// Handle errors and close the database connection on app close
+process.on('SIGINT', async () => {
+  try {
+      await sql.close();
+      process.exit(0);
+  } catch (err) {
+      console.error('Error closing the database connection:', err);
+      process.exit(1);
+  }
+});
+app.get('/attendance-summary', async (req, res) => {
+  try {
+    // Define the query to fetch attendance summary data
+    const query = `
+          SELECT
+              E.name AS employee_name,
+              LT.leave_type,
+              COUNT(L.leave_id) AS leave_count,
+              SUM(DATEDIFF(DAY, L.start_date, L.end_date) + 1) AS total_days
+          FROM LeaveRequests L
+          JOIN Employees E ON L.employee_id = E.id
+          JOIN LeaveTypes LT ON L.leave_type_id = LT.id
+          WHERE L.status = 'Approved'
+          GROUP BY E.name, LT.leave_type;
+      `;
+
+    // Execute the query
+    const result = await db.query(query);
+
+    // Format the result for the summary view
+    const attendanceSummary = result.rows.map(row => ({
+      employee: row.employee_name,
+      leaveType: row.leave_type,
+      leaveCount: row.leave_count,
+      totalDays: row.total_days
+    }));
+
+    res.json(attendanceSummary);
+  } catch (error) {
+    console.error('Error fetching attendance summary:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 // Start the server
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
