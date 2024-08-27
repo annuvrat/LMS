@@ -4,10 +4,11 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
+const moment = require('moment-timezone');
 // const upload = require('./LMS/uploadMiddleware')
 const config1 = require('./config1');
 const config2 = require('./config2');
-
+const currentTime = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -830,7 +831,46 @@ app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
 });
 
 //push-out api 
+app.post('/punch-out', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { empl_code } = req.user;  // Extract employee code from JWT token
 
+  try {
+    // Set punch-out time using the 'Asia/Kolkata' time zone
+    const punchOutTime = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
+
+    const pool = await sql.connect(config2);
+
+    // Get the current date in 'YYYY-MM-DD' format
+    const date = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
+
+    // Check if employee has already punched in today
+    const checkResult = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('date', sql.Date, date)
+      .query(`SELECT * FROM PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+
+    if (checkResult.recordset.length === 0) {
+      return res.status(400).json({ message: "No punch-in record found for today. Please punch in first." });
+    }
+
+    // Check if the employee has already punched out today
+    if (checkResult.recordset[0].PUNCH_OUT) {
+      return res.status(400).json({ message: "Already punched out today." });
+    }
+
+    // Update punch-out record with the correct time zone
+    await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('punch_out', sql.DateTime, punchOutTime)  // Use the punchOutTime from moment
+      .input('date', sql.Date, date)
+      .query(`UPDATE PunchRecords SET PUNCH_OUT = @punch_out WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+
+    res.status(200).json({ message: "Successfully punched out.", punchOutTime });
+  } catch (error) {
+    console.error('Error during punch-out:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
 // Start the server
 
 const port = process.env.PORT || 3000;
