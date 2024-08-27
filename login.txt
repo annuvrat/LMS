@@ -1,0 +1,45 @@
+// Login endpoint
+// app.post('/login', async (req, res) => {
+//   const { empl_code, empl_pwd } = req.body;
+
+//   if (!empl_code || !empl_pwd) {
+//     return res.status(400).json({ message: 'Employee code and password are required.' });
+//   }
+
+//   try {
+//     const pool = await sql.connect(config1);
+//     const result = await pool.request()
+//       .input('empl_code', sql.VarChar, empl_code)
+//       .input('empl_pwd', sql.VarChar, empl_pwd)
+//       .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @empl_code AND [empl_pwd] = @empl_pwd');
+
+//     if (result.recordset.length > 0) {
+//       const user = result.recordset[0];
+
+//       // Debugging logs
+//       console.log('Retrieved User:', user);
+
+//       const token = jwt.sign(
+//         { empl_code: user.EMPL_CODE , designation: user.designation },
+//         jwtSecret,
+//         { expiresIn: '1h' }
+//       );
+
+//       // Debugging logs
+//       console.log('Generated Token:', token);
+
+//       // Decode the token locally for verification
+//       const decoded = jwt.verify(token, jwtSecret);
+//       console.log('Decoded Token Payload:', decoded);
+
+//       res.status(200).json({ message: 'Login successful', token, user });
+//     } else {
+//       res.status(401).json({ message: 'Invalid credentials' });
+//     }
+//   } catch (err) {
+//     console.error('Error during login:', err);
+//     res.status(500).json({ message: 'Internal server error' });
+//   } finally {
+//     await sql.close();
+//   }
+// });

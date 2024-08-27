@@ -1,5 +1,5 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); // Updated
+const sql = require('mssql/msnodesqlv8'); 
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -14,7 +14,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-const jwtSecret = 'your_jwt_secret'; // Define your JWT secret directly in code
+const jwtSecret = 'annuvrat#1'; 
 
 // Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
@@ -67,6 +67,13 @@ const authorizeManager = (req, res, next) => {
 const authorizeHR = (req, res, next) => {
   if (req.user.designation !== 'HR') {
     return res.status(403).json({ message: 'Access denied. Not HR.' });
+  }
+  next();
+};
+
+const authorizeManagerOrHR = (req, res, next) => {
+  if (req.user.designation !== 'Manager' && req.user.designation !== 'HR') {
+    return res.status(403).json({ message: 'Access denied. Not authorized.' });
   }
   next();
 };
@@ -124,17 +131,7 @@ app.get('/', (req, res) => {
   res.json("Hi, I am backend");
 });
 
-// API endpoint
-app.get('/API', async (req, res) => {
-  try {
-    const pool = await sql.connect(config2);
-    const result = await pool.request().query('SELECT * FROM [dbo].[M_EMPL_PERS]');
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('Database connection or query failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+
 
 // Register endpoint
 app.post('/register', async (req, res) => {
@@ -176,51 +173,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Login endpoint
-// app.post('/login', async (req, res) => {
-//   const { empl_code, empl_pwd } = req.body;
 
-//   if (!empl_code || !empl_pwd) {
-//     return res.status(400).json({ message: 'Employee code and password are required.' });
-//   }
-
-//   try {
-//     const pool = await sql.connect(config1);
-//     const result = await pool.request()
-//       .input('empl_code', sql.VarChar, empl_code)
-//       .input('empl_pwd', sql.VarChar, empl_pwd)
-//       .query('SELECT * FROM [dbo].[USER_PASSWORD] WHERE [empl_code] = @empl_code AND [empl_pwd] = @empl_pwd');
-
-//     if (result.recordset.length > 0) {
-//       const user = result.recordset[0];
-
-//       // Debugging logs
-//       console.log('Retrieved User:', user);
-
-//       const token = jwt.sign(
-//         { empl_code: user.EMPL_CODE , designation: user.designation },
-//         jwtSecret,
-//         { expiresIn: '1h' }
-//       );
-
-//       // Debugging logs
-//       console.log('Generated Token:', token);
-
-//       // Decode the token locally for verification
-//       const decoded = jwt.verify(token, jwtSecret);
-//       console.log('Decoded Token Payload:', decoded);
-
-//       res.status(200).json({ message: 'Login successful', token, user });
-//     } else {
-//       res.status(401).json({ message: 'Invalid credentials' });
-//     }
-//   } catch (err) {
-//     console.error('Error during login:', err);
-//     res.status(500).json({ message: 'Internal server error' });
-//   } finally {
-//     await sql.close();
-//   }
-// });
 // API for leave types
 app.get('/leave-types', authenticateJWT, authorizeEmployee, async (req, res) => {
   try {
@@ -287,7 +240,7 @@ app.post('/request-leave', authenticateJWT, authorizeEmployee, async (req, res) 
 });
 
 // API for approving leave requests by Manager or HR
-app.post('/approve-leave/:id', authenticateJWT, async (req, res) => {
+app.post('/approve-leave/:id', authenticateJWT, authorizeManagerOrHR,async (req, res) => {
   const leaveRequestId = parseInt(req.params.id, 10);
   const { approve_by } = req.body;
   const approverId = req.user.empl_code; // Use empl_code from JWT
@@ -560,113 +513,288 @@ app.post('/bulk-upload-leave', authenticateJWT, upload.single('file'), async (re
 });
 
 
-app.get('/api/calendar', async (req, res) => {
+app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { empl_code } = req.user;  // Extracting empl_code from the JWT token
+
   try {
-      // Create a direct connection to the database
-      const pool = await sql.connect(config1);
-      
-      // Execute the query
-      const result = await pool.request().query(`
-          SELECT
-              LR.leave_id AS id,
-              LR.start_date AS start,
-              LR.end_date AS end_date,
-              LT.leave_type AS title,
-              UP.employee_name AS employee_name
-          FROM LEAVE_REQUEST LR
-          JOIN LEAVE_TYPE LT ON LR.leave_type_id = LT.leave_type_id
-          JOIN USER_PASSWORD UP ON LR.empl_code = UP.empl_code
-          WHERE LR.start_date >= GETDATE()
-          ORDER BY LR.start_date;
+    const pool = await sql.connect(config1);
+
+    // Fetch past and future leaves
+    const leaveResult = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .query(`
+        SELECT 
+          LT.NAME AS leave_type,
+          LR.START_DATE,
+          LR.END_DATE,
+          LR.STATUS,
+          DATEDIFF(DAY, LR.START_DATE, LR.END_DATE) + 1 AS duration
+        FROM [dbo].[LEAVE_REQUEST] LR
+        JOIN [dbo].[LEAVE_TYPE] LT ON LR.LEAVE_TYPE_ID = LT.ID
+        WHERE LR.EMPL_CODE = @empl_code
+        ORDER BY LR.START_DATE ASC;
       `);
-      
-      // Send the result as JSON
-      res.json(result.recordset);
-      
-      // Close the database connection
-      sql.close();
-  } catch (error) {
-      console.error('Error fetching calendar data:', error); // Detailed error logging
-      res.status(500).json({ error: 'Internal Server Error', details: error.message });
-  }
-});
 
-// Handle errors and close the database connection on app close
-process.on('SIGINT', async () => {
-  try {
-      await sql.close();
-      process.exit(0);
+    const leaves = leaveResult.recordset.map(row => ({
+      type: 'leave',
+      leaveType: row.leave_type,
+      startDate: row.START_DATE,
+      endDate: row.END_DATE,
+      status: row.STATUS,
+      duration: row.duration
+    }));
+
+    // Fetch upcoming holidays/events
+    const holidayResult = await pool.request()
+      .query(`
+        SELECT 
+          NAME AS holiday_name,
+          DATE AS holiday_date,
+          DESCRIPTION AS holiday_description
+        FROM [dbo].[HOLIDAYS]
+        WHERE DATE >= GETDATE()
+        ORDER BY DATE ASC;
+      `);
+
+    const holidays = holidayResult.recordset.map(row => ({
+      type: 'holiday',
+      holidayName: row.holiday_name,
+      date: row.holiday_date,
+      description: row.holiday_description
+    }));
+
+    // Combine and sort the results
+    const calendar = [...leaves, ...holidays].sort((a, b) => new Date(a.startDate || a.date) - new Date(b.startDate || b.date));
+
+    res.json(calendar);
   } catch (err) {
-      console.error('Error closing the database connection:', err);
-      process.exit(1);
-  }
-});
-// Handle errors and close the database connection on app close
-process.on('SIGINT', async () => {
-  try {
-      await sql.close();
-      process.exit(0);
-  } catch (err) {
-      console.error('Error closing the database connection:', err);
-      process.exit(1);
+    console.error('Error fetching leave calendar:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Handle errors and close the database connection on app close
-process.on('SIGINT', async () => {
+app.get('/attendance-summary', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { empl_code } = req.user;  // Extracting empl_code from the JWT token
+
   try {
-      await sql.close();
-      process.exit(0);
-  } catch (err) {
-      console.error('Error closing the database connection:', err);
-      process.exit(1);
-  }
-});
+    const pool = await sql.connect(config1);
 
+    console.log('empl_code:', empl_code);  // Debugging log
 
-// Handle errors and close the database connection on app close
-process.on('SIGINT', async () => {
-  try {
-      await sql.close();
-      process.exit(0);
-  } catch (err) {
-      console.error('Error closing the database connection:', err);
-      process.exit(1);
-  }
-});
-app.get('/attendance-summary', async (req, res) => {
-  try {
-    // Define the query to fetch attendance summary data
-    const query = `
-          SELECT
-              E.name AS employee_name,
-              LT.leave_type,
-              COUNT(L.leave_id) AS leave_count,
-              SUM(DATEDIFF(DAY, L.start_date, L.end_date) + 1) AS total_days
-          FROM LeaveRequests L
-          JOIN Employees E ON L.employee_id = E.id
-          JOIN LeaveTypes LT ON L.leave_type_id = LT.id
-          WHERE L.status = 'Approved'
-          GROUP BY E.name, LT.leave_type;
-      `;
+    // Query to calculate the attendance summary
+    const result = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .query(`
+        SELECT 
+          LT.NAME AS leave_type,
+          COUNT(LR.ID) AS leave_count,
+          SUM(DATEDIFF(DAY, LR.START_DATE, LR.END_DATE) + 1) AS total_days
+        FROM [dbo].[LEAVE_REQUEST] LR
+        JOIN [dbo].[LEAVE_TYPE] LT ON LR.LEAVE_TYPE_ID = LT.ID
+        WHERE LR.EMPL_CODE = @empl_code AND LR.STATUS = 'Approved'
+        GROUP BY LT.NAME
+      `);
 
-    // Execute the query
-    const result = await db.query(query);
+    console.log('Query Result:', result.recordset);  // Debugging log
 
-    // Format the result for the summary view
-    const attendanceSummary = result.rows.map(row => ({
-      employee: row.employee_name,
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: 'No leave records found for this employee.' });
+    }
+
+    // Format the result
+    const attendanceSummary = result.recordset.map(row => ({
       leaveType: row.leave_type,
       leaveCount: row.leave_count,
       totalDays: row.total_days
     }));
 
     res.json(attendanceSummary);
-  } catch (error) {
-    console.error('Error fetching attendance summary:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+  } catch (err) {
+    console.error('Error fetching attendance summary:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+app.get('/employee-details', authenticateJWT, authorizeEmployee, async (req, res) => {
+  try {
+    // Extract empl_code from JWT payload
+    const { empl_code } = req.user; // assuming req.user contains the decoded JWT payload
+
+    if (!empl_code) {
+      return res.status(400).json({ message: "EMPL_CODE is required." });
+    }
+
+    // Connect to the database
+    const pool = await sql.connect(config2);
+
+    // Query to get employee details
+    const result = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .query(`
+        SELECT 
+          EMPL_CODE, 
+          EMPL_NAME, 
+          SEX, 
+          FAT_HUS_NAME, 
+          BRTH_DATE, 
+          BLD_GRP, 
+          CASTE, 
+          RELIGION, 
+          MRTL_STAT, 
+          MRGE_DATE, 
+          PRSNT_ADDR, 
+          PRSNT_CITY, 
+          PRSNT_STATE, 
+          PRSNT_PNCD, 
+          PRSNT_LNMK, 
+          PRSNT_TEL_NO, 
+          PRMNT_ADDR, 
+          PRMNT_CITY, 
+          PRMNT_STATE, 
+          PRMNT_PNCD, 
+          PRMNT_LNMK, 
+          PRMNT_TEL_NO, 
+          EMAIL_ID, 
+          CELL_NO, 
+          DRV_LIC_NO, 
+          PSPRT_NO, 
+          MARK_ID, 
+          HNDCPD_FLAG, 
+          REF_NAME 
+        FROM [dbo].[M_EMPL_PERS]
+        WHERE EMPL_CODE = @empl_code
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: "Employee not found." });
+    }
+
+    // Return the employee details
+    res.status(200).json(result.recordset[0]);
+  } catch (error) {
+    console.error('Error fetching employee details:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
+  const empl_code = req.params.empl_code;
+  const {
+      EMPL_NAME,
+      SEX,
+      FAT_HUS_NAME,
+      BRTH_DATE,
+      BLD_GRP,
+      CASTE,
+      RELIGION,
+      MRTL_STAT, // Adjust this based on your database schema
+      MRGE_DATE,
+      PRSNT_ADDR,
+      PRSNT_CITY,
+      PRSNT_STATE,
+      PRSNT_PNCD,
+      PRSNT_LNMK,
+      PRSNT_TEL_NO,
+      PRMNT_ADDR,
+      PRMNT_CITY,
+      PRMNT_STATE,
+      PRMNT_PNCD,
+      PRMNT_LNMK,
+      PRMNT_TEL_NO,
+      EMAIL_ID,
+      CELL_NO,
+      DRV_LIC_NO,
+      PSPRT_NO,
+      MARK_ID,
+      HNDCPD_FLAG,
+      REF_NAME
+  } = req.body;
+
+  try {
+      // Ensure MRTL_STAT is within the allowed length
+      const formattedMRTL_STAT = MRTL_STAT ? MRTL_STAT.slice(0, 1) : null;
+
+      // Connect to the database
+      const pool = await sql.connect(config2);
+
+      // Update employee details query
+      const result = await pool.request()
+          .input('empl_code', sql.VarChar, empl_code)
+          .input('EMPL_NAME', sql.VarChar, EMPL_NAME)
+          .input('SEX', sql.VarChar, SEX)
+          .input('FAT_HUS_NAME', sql.VarChar, FAT_HUS_NAME)
+          .input('BRTH_DATE', sql.Date, BRTH_DATE)
+          .input('BLD_GRP', sql.VarChar, BLD_GRP)
+          .input('CASTE', sql.VarChar, CASTE)
+          .input('RELIGION', sql.VarChar, RELIGION)
+          .input('MRTL_STAT', sql.VarChar, formattedMRTL_STAT) // Adjusted for truncation
+          .input('MRGE_DATE', sql.Date, MRGE_DATE)
+          .input('PRSNT_ADDR', sql.VarChar, PRSNT_ADDR)
+          .input('PRSNT_CITY', sql.VarChar, PRSNT_CITY)
+          .input('PRSNT_STATE', sql.VarChar, PRSNT_STATE)
+          .input('PRSNT_PNCD', sql.VarChar, PRSNT_PNCD)
+          .input('PRSNT_LNMK', sql.VarChar, PRSNT_LNMK)
+          .input('PRSNT_TEL_NO', sql.VarChar, PRSNT_TEL_NO)
+          .input('PRMNT_ADDR', sql.VarChar, PRMNT_ADDR)
+          .input('PRMNT_CITY', sql.VarChar, PRMNT_CITY)
+          .input('PRMNT_STATE', sql.VarChar, PRMNT_STATE)
+          .input('PRMNT_PNCD', sql.VarChar, PRMNT_PNCD)
+          .input('PRMNT_LNMK', sql.VarChar, PRMNT_LNMK)
+          .input('PRMNT_TEL_NO', sql.VarChar, PRMNT_TEL_NO)
+          .input('EMAIL_ID', sql.VarChar, EMAIL_ID)
+          .input('CELL_NO', sql.VarChar, CELL_NO)
+          .input('DRV_LIC_NO', sql.VarChar, DRV_LIC_NO)
+          .input('PSPRT_NO', sql.VarChar, PSPRT_NO)
+          .input('MARK_ID', sql.VarChar, MARK_ID)
+          .input('HNDCPD_FLAG', sql.Bit, HNDCPD_FLAG)
+          .input('REF_NAME', sql.VarChar, REF_NAME)
+          .query(`
+              UPDATE [dbo].[M_EMPL_PERS]
+              SET 
+                  EMPL_NAME = @EMPL_NAME,
+                  SEX = @SEX,
+                  FAT_HUS_NAME = @FAT_HUS_NAME,
+                  BRTH_DATE = @BRTH_DATE,
+                  BLD_GRP = @BLD_GRP,
+                  CASTE = @CASTE,
+                  RELIGION = @RELIGION,
+                  MRTL_STAT = @MRTL_STAT,
+                  MRGE_DATE = @MRGE_DATE,
+                  PRSNT_ADDR = @PRSNT_ADDR,
+                  PRSNT_CITY = @PRSNT_CITY,
+                  PRSNT_STATE = @PRSNT_STATE,
+                  PRSNT_PNCD = @PRSNT_PNCD,
+                  PRSNT_LNMK = @PRSNT_LNMK,
+                  PRSNT_TEL_NO = @PRSNT_TEL_NO,
+                  PRMNT_ADDR = @PRMNT_ADDR,
+                  PRMNT_CITY = @PRMNT_CITY,
+                  PRMNT_STATE = @PRMNT_STATE,
+                  PRMNT_PNCD = @PRMNT_PNCD,
+                  PRMNT_LNMK = @PRMNT_LNMK,
+                  PRMNT_TEL_NO = @PRMNT_TEL_NO,
+                  EMAIL_ID = @EMAIL_ID,
+                  CELL_NO = @CELL_NO,
+                  DRV_LIC_NO = @DRV_LIC_NO,
+                  PSPRT_NO = @PSPRT_NO,
+                  MARK_ID = @MARK_ID,
+                  HNDCPD_FLAG = @HNDCPD_FLAG,
+                  REF_NAME = @REF_NAME
+              WHERE EMPL_CODE = @empl_code
+          `);
+
+      if (result.rowsAffected[0] === 0) {
+          return res.status(404).json({ message: "Employee not found." });
+      }
+
+      res.status(200).json({ message: "Employee details updated successfully." });
+  } catch (error) {
+      console.error('Error updating employee details:', error.message);
+      res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+
+
 // Start the server
 
 const port = process.env.PORT || 3000;
