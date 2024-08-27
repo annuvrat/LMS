@@ -792,8 +792,44 @@ app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManager
       res.status(500).json({ message: "Internal server error." });
   }
 });
+// push-in api 
+app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { empl_code } = req.user;  // Extract employee code from JWT token
 
+  try {
+    // Set punch-in time using the 'Asia/Kolkata' time zone
+    const punchInTime = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
 
+    const pool = await sql.connect(config2);
+
+    // Get the current date in 'YYYY-MM-DD' format
+    const date = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
+
+    // Check if employee has already punched in today
+    const checkResult = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('date', sql.Date, date)
+      .query(`SELECT * FROM PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+
+    if (checkResult.recordset.length > 0) {
+      return res.status(400).json({ message: "Already punched in today." });
+    }
+
+    // Insert punch-in record with the correct time zone
+    await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('punch_in', sql.DateTime, punchInTime)  // Use the punchInTime from moment
+      .input('date', sql.Date, date)
+      .query(`INSERT INTO PunchRecords (EMPL_CODE, PUNCH_IN, DATE) VALUES (@empl_code, @punch_in, @date)`);
+
+    res.status(200).json({ message: "Successfully punched in.", punchInTime });
+  } catch (error) {
+    console.error('Error during punch-in:', error.message);
+    res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+});
+
+//push-out api 
 
 // Start the server
 
