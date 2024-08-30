@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const moment = require('moment-timezone');
+
 // const upload = require('./LMS/uploadMiddleware')
 const config1 = require('./config1');
 const config2 = require('./config2');
@@ -13,6 +14,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+
+
+console.log(currentTime); // Outputs the current time in 'Asia/Kolkata' time zone
 
 
 const jwtSecret = 'annuvrat#1'; 
@@ -513,14 +518,17 @@ app.post('/bulk-upload-leave', authenticateJWT, upload.single('file'), async (re
   }
 });
 
-
 app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extracting empl_code from the JWT token
 
   try {
-    const pool = await sql.connect(config1);
+    console.log('Starting calendar API...');
 
-    // Fetch past and future leaves
+    // Connect to the first database (config1) for leaves, holidays, and meetings
+    const pool = await sql.connect(config1);
+    console.log('Connected to the first database (config1).');
+
+    // Fetch employee leaves
     const leaveResult = await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .query(`
@@ -535,6 +543,8 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
         WHERE LR.EMPL_CODE = @empl_code
         ORDER BY LR.START_DATE ASC;
       `);
+
+    console.log('Fetched leaves:', leaveResult.recordset);
 
     const leaves = leaveResult.recordset.map(row => ({
       type: 'leave',
@@ -557,6 +567,8 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
         ORDER BY DATE ASC;
       `);
 
+    console.log('Fetched holidays:', holidayResult.recordset);
+
     const holidays = holidayResult.recordset.map(row => ({
       type: 'holiday',
       holidayName: row.holiday_name,
@@ -564,15 +576,47 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
       description: row.holiday_description
     }));
 
-    // Combine and sort the results
-    const calendar = [...leaves, ...holidays].sort((a, b) => new Date(a.startDate || a.date) - new Date(b.startDate || b.date));
+    // Fetch meetings for the employee
+    const meetingResult = await pool.request()
+      .input('empl_code', sql.VarChar, `%${empl_code}%`)
+      .query(`
+        SELECT 
+          M.TITLE AS meeting_title,
+          M.START_DATETIME AS startTime,
+          M.END_DATETIME AS endTime,
+          M.DESCRIPTION AS meeting_description,
+          M.ATTENDEES
+        FROM [dbo].[MEETING] M
+        WHERE M.ATTENDEES LIKE @empl_code
+        ORDER BY M.START_DATETIME ASC;
+      `);
+
+    console.log('Fetched meetings:', meetingResult.recordset);
+
+    const meetings = meetingResult.recordset.map(row => ({
+      type: 'meeting',
+      title: row.meeting_title,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      description: row.meeting_description,
+      attendees: row.ATTENDEES.split(',')
+    }));
+
+    // Combine and sort all calendar entries
+    const calendar = [...leaves, ...holidays, ...meetings].sort((a, b) => 
+      new Date(a.startDate || a.date || a.startTime) - new Date(b.startDate || b.date || b.startTime)
+    );
+
+    console.log('Combined calendar:', calendar);
 
     res.json(calendar);
   } catch (err) {
-    console.error('Error fetching leave calendar:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Error fetching calendar data:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
+
+
 
 app.get('/attendance-summary', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extracting empl_code from the JWT token
@@ -793,7 +837,9 @@ app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManager
       res.status(500).json({ message: "Internal server error." });
   }
 });
-// push-in api 
+
+
+
 app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extract employee code from JWT token
 
@@ -830,7 +876,7 @@ app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
   }
 });
 
-//push-out api 
+
 app.post('/punch-out', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extract employee code from JWT token
 
@@ -871,8 +917,87 @@ app.post('/punch-out', authenticateJWT, authorizeEmployee, async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
-// Start the server
 
+
+app.post('/post-announcements', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+  const { title, content } = req.body;
+  const author_id = req.user.empl_code; // Assuming JWT contains employee code
+
+  try {
+    const pool = await sql.connect(config2);
+    await pool.request()
+      .input('title', sql.VarChar, title)
+      .input('content', sql.Text, content)
+      .input('author_id', sql.VarChar, author_id)
+      .input('created_at', sql.DateTime, new Date())
+      .input('updated_at', sql.DateTime, new Date())
+      .query(`INSERT INTO Announcements (title, content, author_id, created_at, updated_at) 
+              VALUES (@title, @content, @author_id, @created_at, @updated_at)`);
+
+    res.status(201).json({ message: "Announcement created successfully." });
+  } catch (error) {
+    console.error('Error creating announcement:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+// API to fetch all announcements
+app.get('/announcements', authenticateJWT, async (req, res) => {
+  try {
+    const pool = await sql.connect(config2);
+    const result = await pool.request()
+      .query(`SELECT id, title, content, created_at, updated_at FROM Announcements ORDER BY created_at DESC`);
+
+    res.status(200).json(result.recordset);
+  } catch (error) {
+    console.error('Error fetching announcements:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+// API to update an existing announcement
+app.put('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+  const { id } = req.params;
+  const { title, content } = req.body;
+
+  try {
+    const pool = await sql.connect(config2);
+    await pool.request()
+      .input('id', sql.Int, id)
+      .input('title', sql.VarChar, title)
+      .input('content', sql.Text, content)
+      .input('updated_at', sql.DateTime, new Date())
+      .query(`UPDATE Announcements SET title = @title, content = @content, updated_at = @updated_at WHERE id = @id`);
+
+    res.status(200).json({ message: "Announcement updated successfully." });
+  } catch (error) {
+    console.error('Error updating announcement:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+// API to delete an announcement
+app.delete('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await sql.connect(config2);
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query(`DELETE FROM Announcements WHERE id = @id`);
+
+    res.status(200).json({ message: "Announcement deleted successfully." });
+  } catch (error) {
+    console.error('Error deleting announcement:', error.message);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+// 
+
+
+
+// Start the server
+console.log(Date);
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
