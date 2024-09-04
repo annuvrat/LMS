@@ -183,16 +183,28 @@ app.post('/register', async (req, res) => {
 // API for leave types
 app.get('/leave-types', authenticateJWT, authorizeEmployee, async (req, res) => {
   try {
+    console.log('Fetching leave types...');
+
     const pool = await sql.connect(config1);
+    console.log('Connected to database.');
+
     const result = await pool.request().query('SELECT * FROM LEAVE_TYPE');
+    console.log('Leave types fetched successfully.');
+
     res.json(result.recordset);
   } catch (err) {
     console.error('Error fetching leave types:', err);
-    res.status(500).json({ error: 'Failed to fetch leave types' });
+    res.status(500).json({ error: 'Failed to fetch leave types', details: err.message });
   } finally {
-    sql.close();
+    try {
+      await sql.close();
+    } catch (closeErr) {
+      console.error('Error closing SQL connection:', closeErr);
+    }
   }
 });
+
+
 
 // API for submitting leave requests (requires authentication)
 app.post('/request-leave', authenticateJWT, authorizeEmployee, async (req, res) => {
@@ -244,7 +256,33 @@ app.post('/request-leave', authenticateJWT, authorizeEmployee, async (req, res) 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+app.get('/leave-requests', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
+  try {
+      const pool = await sql.connect(config1);
 
+      const query = `
+          SELECT 
+              lr.ID,
+              lr.EMPL_CODE,
+              lt.NAME,
+              lr.START_DATE,
+              lr.END_DATE,
+              lr.REASON
+          FROM [dbo].[LEAVE_REQUEST] lr
+          JOIN [dbo].[LEAVE_TYPE] lt ON lr.LEAVE_TYPE_ID = lt.ID
+          WHERE lr.STATUS = 'Pending'
+      `;
+
+      const request = pool.request();
+      const result = await request.query(query);
+      const leaveRequests = result.recordset;
+
+      res.json({ leaveRequests });
+  } catch (err) {
+      console.error('Error fetching leave requests:', err);  // Log the full error for debugging
+      res.status(500).json({ error: 'Internal server error' });
+  }
+})
 // API for approving leave requests by Manager or HR
 app.post('/approve-leave/:id', authenticateJWT, authorizeManagerOrHR,async (req, res) => {
   const leaveRequestId = parseInt(req.params.id, 10);
@@ -350,6 +388,101 @@ const leaveEntitlements = {
   'PL': 20, // Privilege Leave (example)
   'WP': 12  // Work from Home (example)
 };
+
+app.post('/handle-leave/:id', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
+  const leaveRequestId = parseInt(req.params.id, 10);
+  const { action, reason } = req.body; // action can be 'approve', 'reject', or 'resubmit'
+  const approverId = req.user.empl_code;
+  const approverRole = req.user.designation;
+
+  console.log(`Leave Request ID: ${leaveRequestId}`);
+  console.log(`Action: ${action}`);
+  console.log(`Approver ID: ${approverId}`);
+  console.log(`Approver Role: ${approverRole}`);
+
+  if (!leaveRequestId || !action) {
+    return res.status(400).json({ error: 'Leave request ID and action are required.' });
+  }
+
+  if (!['approve', 'reject', 'resubmit'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid action. Use "approve", "reject", or "resubmit".' });
+  }
+
+  try {
+    const pool = await sql.connect(config1);
+
+    // Check if the leave request exists and validate details
+    const leaveRequestResult = await pool.request()
+      .input('leaveRequestId', sql.Int, leaveRequestId)
+      .query('SELECT * FROM [dbo].[LEAVE_REQUEST] WHERE [ID] = @leaveRequestId');
+
+    if (leaveRequestResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Leave request not found.' });
+    }
+
+    const leaveRequest = leaveRequestResult.recordset[0];
+
+    let updateQuery = '';
+    let updateParams = [];
+
+    switch (action) {
+      case 'approve':
+        if (approverRole === 'Manager') {
+          updateQuery = `
+            UPDATE [dbo].[LEAVE_REQUEST]
+            SET [APPROVED_BY_MANAGER] = 1, [approved_by_manager_name] = @approverName, [STATUS] = 'Approved by Manager', [manager_id] = @approverId
+            WHERE [ID] = @leaveRequestId
+          `;
+          updateParams = [
+            { name: 'approverName', type: sql.NVarChar, value: approverRole },
+            { name: 'approverId', type: sql.Int, value: approverId }
+          ];
+        } else if (approverRole === 'HR') {
+          updateQuery = `
+            UPDATE [dbo].[LEAVE_REQUEST]
+            SET [APPROVED_BY_HR] = 1, [approved_by_hr_name] = @approverName, [STATUS] = 'Approved by HR', [hr_id] = @approverId
+            WHERE [ID] = @leaveRequestId
+          `;
+          updateParams = [
+            { name: 'approverName', type: sql.NVarChar, value: approverRole },
+            { name: 'approverId', type: sql.Int, value: approverId }
+          ];
+        } else {
+          return res.status(403).json({ error: 'Access denied. Not authorized to approve.' });
+        }
+        break;
+
+      case 'reject':
+      case 'resubmit':
+        updateQuery = `
+          UPDATE [dbo].[LEAVE_REQUEST]
+          SET [STATUS] = @status, [REASON] = @reason
+          WHERE [ID] = @leaveRequestId
+        `;
+        updateParams = [
+          { name: 'status', type: sql.VarChar, value: action === 'reject' ? 'Rejected' : 'Resubmit' },
+          { name: 'reason', type: sql.NVarChar, value: reason }
+        ];
+        break;
+
+      default:
+        return res.status(400).json({ error: 'Invalid action.' });
+    }
+
+    // Execute the update query
+    const request = pool.request()
+      .input('leaveRequestId', sql.Int, leaveRequestId);
+
+    updateParams.forEach(param => request.input(param.name, param.type, param.value));
+
+    await request.query(updateQuery);
+
+    res.status(200).json({ message: `Leave request ${action}ed successfully.` });
+  } catch (err) {
+    console.error('Error handling leave request:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
 
 app.get('/leave-balance', authenticateJWT, async (req, res) => {
   const emplCode = req.user.empl_code;
@@ -659,6 +792,30 @@ app.get('/attendance-summary', authenticateJWT, authorizeEmployee, async (req, r
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+app.post('/request-leave-correction', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { emplCode, leaveRequestId, message } = req.body;
+
+  try {
+      const pool = await sql.connect(config);
+
+      // Insert the correction request into the database
+      const insertCorrectionRequestQuery = `
+          INSERT INTO LEAVE_CORRECTION (EMPL_CODE, LEAVE_REQUEST_ID, MESSAGE)
+          VALUES (@emplCode, @leaveRequestId, @message)
+      `;
+      await pool.request()
+          .input('emplCode', sql.VarChar, emplCode)
+          .input('leaveRequestId', sql.Int, leaveRequestId)
+          .input('message', sql.Text, message)
+          .query(insertCorrectionRequestQuery);
+
+      res.status(201).json({ message: 'Leave correction request submitted successfully.' });
+  } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
 
 app.get('/employee-details', authenticateJWT, authorizeEmployee, async (req, res) => {
   try {
@@ -840,6 +997,7 @@ app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManager
 
 
 
+// Punch-In Endpoint
 app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extract employee code from JWT token
 
@@ -856,7 +1014,7 @@ app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
     const checkResult = await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .input('date', sql.Date, date)
-      .query(`SELECT * FROM PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+      .query(`SELECT * FROM dbo.PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
 
     if (checkResult.recordset.length > 0) {
       return res.status(400).json({ message: "Already punched in today." });
@@ -867,7 +1025,7 @@ app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
       .input('empl_code', sql.VarChar, empl_code)
       .input('punch_in', sql.DateTime, punchInTime)  // Use the punchInTime from moment
       .input('date', sql.Date, date)
-      .query(`INSERT INTO PunchRecords (EMPL_CODE, PUNCH_IN, DATE) VALUES (@empl_code, @punch_in, @date)`);
+      .query(`INSERT INTO dbo.PunchRecords (EMPL_CODE, PUNCH_IN, DATE) VALUES (@empl_code, @punch_in, @date)`);
 
     res.status(200).json({ message: "Successfully punched in.", punchInTime });
   } catch (error) {
@@ -876,7 +1034,7 @@ app.post('/punch-in', authenticateJWT, authorizeEmployee, async (req, res) => {
   }
 });
 
-
+// Punch-Out Endpoint
 app.post('/punch-out', authenticateJWT, authorizeEmployee, async (req, res) => {
   const { empl_code } = req.user;  // Extract employee code from JWT token
 
@@ -889,34 +1047,83 @@ app.post('/punch-out', authenticateJWT, authorizeEmployee, async (req, res) => {
     // Get the current date in 'YYYY-MM-DD' format
     const date = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
 
-    // Check if employee has already punched in today
+    // Check if employee has punched in today and hasn't punched out yet
     const checkResult = await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .input('date', sql.Date, date)
-      .query(`SELECT * FROM PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+      .query(`SELECT * FROM dbo.PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date AND PUNCH_OUT IS NULL`);
 
     if (checkResult.recordset.length === 0) {
-      return res.status(400).json({ message: "No punch-in record found for today. Please punch in first." });
+      return res.status(400).json({ message: "No punch-in record found or already punched out." });
     }
 
-    // Check if the employee has already punched out today
-    if (checkResult.recordset[0].PUNCH_OUT) {
-      return res.status(400).json({ message: "Already punched out today." });
-    }
-
-    // Update punch-out record with the correct time zone
+    // Update punch-out time for the existing record
     await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .input('punch_out', sql.DateTime, punchOutTime)  // Use the punchOutTime from moment
       .input('date', sql.Date, date)
-      .query(`UPDATE PunchRecords SET PUNCH_OUT = @punch_out WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+      .query(`UPDATE dbo.PunchRecords SET PUNCH_OUT = @punch_out WHERE EMPL_CODE = @empl_code AND DATE = @date`);
 
     res.status(200).json({ message: "Successfully punched out.", punchOutTime });
   } catch (error) {
     console.error('Error during punch-out:', error.message);
-    res.status(500).json({ message: "Internal server error." });
+    res.status(500).json({ message: "Internal server error.", error: error.message });
   }
 });
+
+
+app.get('/punch-records', authenticateJWT, authorizeEmployee, async (req, res) => {
+  const { empl_code } = req.user; // Extract employee code from JWT token
+
+  try {
+    const pool = await sql.connect(config1);
+
+    // Get the current date in 'YYYY-MM-DD' format
+    const date = moment().tz('Asia/Kolkata').format('YYYY-MM-DD');
+
+    // Query to retrieve punch-in and punch-out records for the employee on the current date
+    const result = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('date', sql.Date, date)
+      .query(`SELECT * FROM dbo.PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: "No punch records found for today." });
+    }
+
+    const punchRecord = result.recordset[0];
+    const punchInTime = punchRecord.PUNCH_IN ? moment(punchRecord.PUNCH_IN).tz('Asia/Kolkata') : null;
+    const punchOutTime = punchRecord.PUNCH_OUT ? moment(punchRecord.PUNCH_OUT).tz('Asia/Kolkata') : null;
+
+    let totalTime = null;
+    if (punchInTime && punchOutTime) {
+      totalTime = moment.duration(punchOutTime.diff(punchInTime)).humanize();
+    }
+
+    // Fetch manager details
+    const managerResult = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('date', sql.Date, date)
+      .query(`SELECT DISTINCT MANAGER FROM dbo.PunchRecords WHERE EMPL_CODE = @empl_code AND DATE = @date`);
+
+    const manager = managerResult.recordset[0] || {};
+
+    res.status(200).json({
+      punchInTime: punchInTime ? punchInTime.format('YYYY-MM-DD HH:mm:ss') : null,
+      punchOutTime: punchOutTime ? punchOutTime.format('YYYY-MM-DD HH:mm:ss') : null,
+      totalTime,
+      manager: manager.MANAGER || 'No manager assigned'
+    });
+  } catch (error) {
+    console.error('Error fetching punch records:', error.message);
+    res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+});
+
+
+
+
+
 
 
 app.post('/post-announcements', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
@@ -944,9 +1151,9 @@ app.post('/post-announcements', authenticateJWT,  authorizeManagerOrHR, async (r
 // API to fetch all announcements
 app.get('/announcements', authenticateJWT, async (req, res) => {
   try {
-    const pool = await sql.connect(config2);
+    const pool = await sql.connect(config1);
     const result = await pool.request()
-      .query(`SELECT id, title, content, created_at, updated_at FROM Announcements ORDER BY created_at DESC`);
+      .query(`SELECT id, title, content, created_at, updated_at FROM dbo.Announcements ORDER BY created_at DESC`);
 
     res.status(200).json(result.recordset);
   } catch (error) {
