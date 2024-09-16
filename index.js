@@ -1,5 +1,5 @@
 const express = require('express');
-const sql = require('mssql/msnodesqlv8'); 
+const sql = require('mssql/msnodesqlv8');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -20,7 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 console.log(currentTime); // Outputs the current time in 'Asia/Kolkata' time zone
 
 
-const jwtSecret = 'annuvrat#1'; 
+const jwtSecret = 'annuvrat#1';
 
 // Middleware for authenticating JWT tokens
 const authenticateJWT = (req, res, next) => {
@@ -112,7 +112,7 @@ app.post('/login', async (req, res) => {
       const token = jwt.sign(
         { empl_code: user.EMPL_CODE, designation: user.designation },
         jwtSecret,
-        { expiresIn: '1h' }
+        { expiresIn: '3h' }
       );
 
       // Debug: log the generated token
@@ -188,7 +188,7 @@ app.get('/leave-types', authenticateJWT, authorizeEmployee, async (req, res) => 
     const pool = await sql.connect(config1);
     console.log('Connected to database.');
 
-    const result = await pool.request().query('SELECT * FROM LEAVE_TYPE');
+    const result = await pool.request().query('SELECT  [ID], [NAME] FROM dbo.LEAVE_TYPE');
     console.log('Leave types fetched successfully.');
 
     res.json(result.recordset);
@@ -258,9 +258,9 @@ app.post('/request-leave', authenticateJWT, authorizeEmployee, async (req, res) 
 });
 app.get('/leave-requests', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   try {
-      const pool = await sql.connect(config1);
+    const pool = await sql.connect(config1);
 
-      const query = `
+    const query = `
           SELECT 
               lr.ID,
               lr.EMPL_CODE,
@@ -273,18 +273,18 @@ app.get('/leave-requests', authenticateJWT, authorizeManagerOrHR, async (req, re
           WHERE lr.STATUS = 'Pending'
       `;
 
-      const request = pool.request();
-      const result = await request.query(query);
-      const leaveRequests = result.recordset;
+    const request = pool.request();
+    const result = await request.query(query);
+    const leaveRequests = result.recordset;
 
-      res.json({ leaveRequests });
+    res.json({ leaveRequests });
   } catch (err) {
-      console.error('Error fetching leave requests:', err);  // Log the full error for debugging
-      res.status(500).json({ error: 'Internal server error' });
+    console.error('Error fetching leave requests:', err);  // Log the full error for debugging
+    res.status(500).json({ error: 'Internal server error' });
   }
 })
 // API for approving leave requests by Manager or HR
-app.post('/approve-leave/:id', authenticateJWT, authorizeManagerOrHR,async (req, res) => {
+app.post('/approve-leave/:id', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   const leaveRequestId = parseInt(req.params.id, 10);
   const { approve_by } = req.body;
   const approverId = req.user.empl_code; // Use empl_code from JWT
@@ -539,17 +539,31 @@ app.get('/leave-balance', authenticateJWT, async (req, res) => {
 
 
 
-app.post('/adjust-leave-balance', authenticateJWT, authorizeManager, async (req, res) => {
-  const { emplCode, leaveTypeId, adjustment, reason } = req.body;
+app.post('/adjust-leave-balance', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
+  const { emplCode, leaveTypeName, adjustment } = req.body;
 
   try {
     const pool = await sql.connect(config1);
 
+    // Look up the leave type ID based on the leave type name
+    const getLeaveTypeIdQuery = `
+      SELECT ID FROM LEAVE_TYPE WHERE NAME = @leaveTypeName
+    `;
+    const leaveTypeResult = await pool.request()
+      .input('leaveTypeName', sql.VarChar, leaveTypeName)
+      .query(getLeaveTypeIdQuery);
+
+    if (leaveTypeResult.recordset.length === 0) {
+      return res.status(404).json({ error: "Leave type not found." });
+    }
+
+    const leaveTypeId = leaveTypeResult.recordset[0].ID;
+
     // Check if leave balance record exists
     const checkBalanceQuery = `
-          SELECT * FROM LEAVE_BALANCE 
-          WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
-      `;
+      SELECT * FROM LEAVE_BALANCE 
+      WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
+    `;
     const checkBalanceResult = await pool.request()
       .input('emplCode', sql.VarChar, emplCode)
       .input('leaveTypeId', sql.Int, leaveTypeId)
@@ -561,11 +575,11 @@ app.post('/adjust-leave-balance', authenticateJWT, authorizeManager, async (req,
 
     // Adjust leave balance and leaves taken
     const adjustLeaveBalanceQuery = `
-          UPDATE LEAVE_BALANCE
-          SET BALANCE = BALANCE + @adjustment,
-              LEAVES_TAKEN = LEAVES_TAKEN + @adjustment
-          WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
-      `;
+      UPDATE LEAVE_BALANCE
+      SET BALANCE = BALANCE + @adjustment,
+          LEAVES_TAKEN = LEAVES_TAKEN + @adjustment
+      WHERE EMPL_CODE = @emplCode AND LEAVE_TYPE_ID = @leaveTypeId
+    `;
     await pool.request()
       .input('adjustment', sql.Int, adjustment)
       .input('emplCode', sql.VarChar, emplCode)
@@ -736,7 +750,7 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
     }));
 
     // Combine and sort all calendar entries
-    const calendar = [...leaves, ...holidays, ...meetings].sort((a, b) => 
+    const calendar = [...leaves, ...holidays, ...meetings].sort((a, b) =>
       new Date(a.startDate || a.date || a.startTime) - new Date(b.startDate || b.date || b.startTime)
     );
 
@@ -796,23 +810,23 @@ app.post('/request-leave-correction', authenticateJWT, authorizeEmployee, async 
   const { emplCode, leaveRequestId, message } = req.body;
 
   try {
-      const pool = await sql.connect(config);
+    const pool = await sql.connect(config1);
 
-      // Insert the correction request into the database
-      const insertCorrectionRequestQuery = `
+    // Insert the correction request into the database
+    const insertCorrectionRequestQuery = `
           INSERT INTO LEAVE_CORRECTION (EMPL_CODE, LEAVE_REQUEST_ID, MESSAGE)
           VALUES (@emplCode, @leaveRequestId, @message)
       `;
-      await pool.request()
-          .input('emplCode', sql.VarChar, emplCode)
-          .input('leaveRequestId', sql.Int, leaveRequestId)
-          .input('message', sql.Text, message)
-          .query(insertCorrectionRequestQuery);
+    await pool.request()
+      .input('emplCode', sql.VarChar, emplCode)
+      .input('leaveRequestId', sql.Int, leaveRequestId)
+      .input('message', sql.Text, message)
+      .query(insertCorrectionRequestQuery);
 
-      res.status(201).json({ message: 'Leave correction request submitted successfully.' });
+    res.status(201).json({ message: 'Leave correction request submitted successfully.' });
   } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Internal server error', details: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
@@ -882,75 +896,75 @@ app.get('/employee-details', authenticateJWT, authorizeEmployee, async (req, res
 app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   const empl_code = req.params.empl_code;
   const {
-      EMPL_NAME,
-      SEX,
-      FAT_HUS_NAME,
-      BRTH_DATE,
-      BLD_GRP,
-      CASTE,
-      RELIGION,
-      MRTL_STAT, // Adjust this based on your database schema
-      MRGE_DATE,
-      PRSNT_ADDR,
-      PRSNT_CITY,
-      PRSNT_STATE,
-      PRSNT_PNCD,
-      PRSNT_LNMK,
-      PRSNT_TEL_NO,
-      PRMNT_ADDR,
-      PRMNT_CITY,
-      PRMNT_STATE,
-      PRMNT_PNCD,
-      PRMNT_LNMK,
-      PRMNT_TEL_NO,
-      EMAIL_ID,
-      CELL_NO,
-      DRV_LIC_NO,
-      PSPRT_NO,
-      MARK_ID,
-      HNDCPD_FLAG,
-      REF_NAME
+    EMPL_NAME,
+    SEX,
+    FAT_HUS_NAME,
+    BRTH_DATE,
+    BLD_GRP,
+    CASTE,
+    RELIGION,
+    MRTL_STAT, // Adjust this based on your database schema
+    MRGE_DATE,
+    PRSNT_ADDR,
+    PRSNT_CITY,
+    PRSNT_STATE,
+    PRSNT_PNCD,
+    PRSNT_LNMK,
+    PRSNT_TEL_NO,
+    PRMNT_ADDR,
+    PRMNT_CITY,
+    PRMNT_STATE,
+    PRMNT_PNCD,
+    PRMNT_LNMK,
+    PRMNT_TEL_NO,
+    EMAIL_ID,
+    CELL_NO,
+    DRV_LIC_NO,
+    PSPRT_NO,
+    MARK_ID,
+    HNDCPD_FLAG,
+    REF_NAME
   } = req.body;
 
   try {
-      // Ensure MRTL_STAT is within the allowed length
-      const formattedMRTL_STAT = MRTL_STAT ? MRTL_STAT.slice(0, 1) : null;
+    // Ensure MRTL_STAT is within the allowed length
+    const formattedMRTL_STAT = MRTL_STAT ? MRTL_STAT.slice(0, 1) : null;
 
-      // Connect to the database
-      const pool = await sql.connect(config2);
+    // Connect to the database
+    const pool = await sql.connect(config2);
 
-      // Update employee details query
-      const result = await pool.request()
-          .input('empl_code', sql.VarChar, empl_code)
-          .input('EMPL_NAME', sql.VarChar, EMPL_NAME)
-          .input('SEX', sql.VarChar, SEX)
-          .input('FAT_HUS_NAME', sql.VarChar, FAT_HUS_NAME)
-          .input('BRTH_DATE', sql.Date, BRTH_DATE)
-          .input('BLD_GRP', sql.VarChar, BLD_GRP)
-          .input('CASTE', sql.VarChar, CASTE)
-          .input('RELIGION', sql.VarChar, RELIGION)
-          .input('MRTL_STAT', sql.VarChar, formattedMRTL_STAT) // Adjusted for truncation
-          .input('MRGE_DATE', sql.Date, MRGE_DATE)
-          .input('PRSNT_ADDR', sql.VarChar, PRSNT_ADDR)
-          .input('PRSNT_CITY', sql.VarChar, PRSNT_CITY)
-          .input('PRSNT_STATE', sql.VarChar, PRSNT_STATE)
-          .input('PRSNT_PNCD', sql.VarChar, PRSNT_PNCD)
-          .input('PRSNT_LNMK', sql.VarChar, PRSNT_LNMK)
-          .input('PRSNT_TEL_NO', sql.VarChar, PRSNT_TEL_NO)
-          .input('PRMNT_ADDR', sql.VarChar, PRMNT_ADDR)
-          .input('PRMNT_CITY', sql.VarChar, PRMNT_CITY)
-          .input('PRMNT_STATE', sql.VarChar, PRMNT_STATE)
-          .input('PRMNT_PNCD', sql.VarChar, PRMNT_PNCD)
-          .input('PRMNT_LNMK', sql.VarChar, PRMNT_LNMK)
-          .input('PRMNT_TEL_NO', sql.VarChar, PRMNT_TEL_NO)
-          .input('EMAIL_ID', sql.VarChar, EMAIL_ID)
-          .input('CELL_NO', sql.VarChar, CELL_NO)
-          .input('DRV_LIC_NO', sql.VarChar, DRV_LIC_NO)
-          .input('PSPRT_NO', sql.VarChar, PSPRT_NO)
-          .input('MARK_ID', sql.VarChar, MARK_ID)
-          .input('HNDCPD_FLAG', sql.Bit, HNDCPD_FLAG)
-          .input('REF_NAME', sql.VarChar, REF_NAME)
-          .query(`
+    // Update employee details query
+    const result = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .input('EMPL_NAME', sql.VarChar, EMPL_NAME)
+      .input('SEX', sql.VarChar, SEX)
+      .input('FAT_HUS_NAME', sql.VarChar, FAT_HUS_NAME)
+      .input('BRTH_DATE', sql.Date, BRTH_DATE)
+      .input('BLD_GRP', sql.VarChar, BLD_GRP)
+      .input('CASTE', sql.VarChar, CASTE)
+      .input('RELIGION', sql.VarChar, RELIGION)
+      .input('MRTL_STAT', sql.VarChar, formattedMRTL_STAT) // Adjusted for truncation
+      .input('MRGE_DATE', sql.Date, MRGE_DATE)
+      .input('PRSNT_ADDR', sql.VarChar, PRSNT_ADDR)
+      .input('PRSNT_CITY', sql.VarChar, PRSNT_CITY)
+      .input('PRSNT_STATE', sql.VarChar, PRSNT_STATE)
+      .input('PRSNT_PNCD', sql.VarChar, PRSNT_PNCD)
+      .input('PRSNT_LNMK', sql.VarChar, PRSNT_LNMK)
+      .input('PRSNT_TEL_NO', sql.VarChar, PRSNT_TEL_NO)
+      .input('PRMNT_ADDR', sql.VarChar, PRMNT_ADDR)
+      .input('PRMNT_CITY', sql.VarChar, PRMNT_CITY)
+      .input('PRMNT_STATE', sql.VarChar, PRMNT_STATE)
+      .input('PRMNT_PNCD', sql.VarChar, PRMNT_PNCD)
+      .input('PRMNT_LNMK', sql.VarChar, PRMNT_LNMK)
+      .input('PRMNT_TEL_NO', sql.VarChar, PRMNT_TEL_NO)
+      .input('EMAIL_ID', sql.VarChar, EMAIL_ID)
+      .input('CELL_NO', sql.VarChar, CELL_NO)
+      .input('DRV_LIC_NO', sql.VarChar, DRV_LIC_NO)
+      .input('PSPRT_NO', sql.VarChar, PSPRT_NO)
+      .input('MARK_ID', sql.VarChar, MARK_ID)
+      .input('HNDCPD_FLAG', sql.Bit, HNDCPD_FLAG)
+      .input('REF_NAME', sql.VarChar, REF_NAME)
+      .query(`
               UPDATE [dbo].[M_EMPL_PERS]
               SET 
                   EMPL_NAME = @EMPL_NAME,
@@ -984,14 +998,14 @@ app.put('/update-employee-details/:empl_code', authenticateJWT, authorizeManager
               WHERE EMPL_CODE = @empl_code
           `);
 
-      if (result.rowsAffected[0] === 0) {
-          return res.status(404).json({ message: "Employee not found." });
-      }
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ message: "Employee not found." });
+    }
 
-      res.status(200).json({ message: "Employee details updated successfully." });
+    res.status(200).json({ message: "Employee details updated successfully." });
   } catch (error) {
-      console.error('Error updating employee details:', error.message);
-      res.status(500).json({ message: "Internal server error." });
+    console.error('Error updating employee details:', error.message);
+    res.status(500).json({ message: "Internal server error." });
   }
 });
 
@@ -1100,7 +1114,7 @@ app.get('/punch-records', authenticateJWT, authorizeEmployee, async (req, res) =
       totalTime = moment.duration(punchOutTime.diff(punchInTime)).humanize();
     }
 
-    // Fetch manager details
+
     const managerResult = await pool.request()
       .input('empl_code', sql.VarChar, empl_code)
       .input('date', sql.Date, date)
@@ -1126,7 +1140,7 @@ app.get('/punch-records', authenticateJWT, authorizeEmployee, async (req, res) =
 
 
 
-app.post('/post-announcements', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+app.post('/post-announcements', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   const { title, content } = req.body;
   const author_id = req.user.empl_code; // Assuming JWT contains employee code
 
@@ -1163,7 +1177,7 @@ app.get('/announcements', authenticateJWT, async (req, res) => {
 });
 
 // API to update an existing announcement
-app.put('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+app.put('/announcements/:id', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   const { id } = req.params;
   const { title, content } = req.body;
 
@@ -1184,7 +1198,7 @@ app.put('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (req
 });
 
 // API to delete an announcement
-app.delete('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (req, res) => {
+app.delete('/announcements/:id', authenticateJWT, authorizeManagerOrHR, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -1200,6 +1214,175 @@ app.delete('/announcements/:id', authenticateJWT,  authorizeManagerOrHR, async (
   }
 });
 // 
+app.get('/rejected-leavese', authenticateJWT, async (req, res) => {
+  const { empl_code, designation } = req.user;  // extracted from JWT
+
+  try {
+    const pool = await sql.connect(config1);
+    let query = '';
+    let result = null;
+    const request = pool.request();
+
+    // If the user is a Manager, fetch the approved leaves for this manager
+    if (designation === 'Manager') {
+      query = `
+        SELECT * FROM [dbo].[LEAVE_REQUEST]
+        WHERE manager_id = (
+          SELECT id FROM [dbo].[MANAGER]
+          WHERE id = (
+            SELECT manager_id FROM [dbo].[USER_PASSWORD] WHERE empl_code = @empl_code
+          )
+        )
+        AND APPROVED_BY_MANAGER = 0
+      `;
+      request.input('empl_code', sql.VarChar, empl_code);
+
+      // If the user is HR, fetch the approved leaves for this HR
+    } else if (designation === 'HR') {
+      query = `
+        SELECT * FROM [dbo].[LEAVE_REQUEST]
+        WHERE hr_id = (
+          SELECT id FROM [dbo].[HR]
+          WHERE id = (
+            SELECT hr_id FROM [dbo].[USER_PASSWORD] WHERE empl_code = @empl_code
+          )
+        )
+        AND APPROVED_BY_HR = 0
+      `;
+      request.input('empl_code', sql.VarChar, empl_code);
+
+      // If the user is neither HR nor Manager, return unauthorized access
+    } else {
+      return res.status(403).json({ message: 'Unauthorized access. Only Managers or HR can view this resource.' });
+    }
+
+    // Execute the query and fetch results
+    result = await request.query(query);
+
+    if (result.recordset.length > 0) {
+      res.status(200).json({ message: 'Rejected  leaves fetched successfully', approvedLeaves: result.recordset });
+    } else {
+      res.status(404).json({ message: 'No rejected leaves found.' });
+    }
+  } catch (err) {
+    console.error('Error fetching approved leaves:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  } finally {
+    sql.close();
+  }
+});
+app.get('/approved-leaves-manager', authenticateJWT, async (req, res) => {
+  try {
+    // Open SQL connection
+    const pool = await sql.connect(config1);
+    const request = pool.request();
+
+    // Query to fetch all leaves with status 'Approved by Manager'
+    const query = `
+      SELECT * FROM [dbo].[LEAVE_REQUEST]
+      WHERE APPROVED_BY_MANAGER = 1 AND STATUS = 'Approved by Manager'
+    `;
+
+    // Execute the query
+    const result = await request.query(query);
+
+    if (result.recordset.length > 0) {
+      // Return all the approved leaves by manager
+      res.status(200).json({ message: 'Approved leaves fetched successfully', approvedLeaves: result.recordset });
+    } else {
+      // No approved leaves found
+      res.status(404).json({ message: 'No approved leaves found.' });
+    }
+  } catch (err) {
+    // Handle errors
+    console.error('Error fetching approved leaves:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  } finally {
+    // Close SQL connection
+    sql.close();
+  }
+});
+
+
+
+
+app.get('/rejected-leaves', authenticateJWT, async (req, res) => {
+  const { designation } = req.user; // Extracted from JWT
+
+  try {
+    const pool = await sql.connect(config1);
+    const request = pool.request();
+    
+    let query = '';
+
+    // Fetch rejected leaves based on designation
+    if (designation === 'Manager') {
+      query = `
+        SELECT * FROM [dbo].[LEAVE_REQUEST]
+        WHERE APPROVED_BY_MANAGER = 0 AND STATUS = 'Rejected'
+      `;
+    } else if (designation === 'HR') {
+      query = `
+        SELECT * FROM [dbo].[LEAVE_REQUEST]
+        WHERE APPROVED_BY_HR = 0 AND STATUS = 'Rejected'
+      `;
+    } else {
+      return res.status(403).json({ message: 'Unauthorized access. Only Managers or HR can view this resource.' });
+    }
+
+    // Execute the query and fetch results
+    const result = await request.query(query);
+
+    if (result.recordset.length > 0) {
+      res.status(200).json({ message: 'Rejected leaves fetched successfully', rejectedLeaves: result.recordset });
+    } else {
+      res.status(404).json({ message: 'No rejected leaves found.' });
+    }
+  } catch (err) {
+    console.error('Error fetching rejected leaves:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  } 
+});
+
+
+
+
+// GET: Fetch meeting attendees from USER_PASSWORD table
+app.get('/attendees', async (req, res) => {
+  try {
+    await sql.connect(config1);
+    const result = await sql.query('SELECT EMPL_CODE, employee_name FROM USER_PASSWORD');
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('Error fetching attendees:', error);
+    res.status(500).json({ error: 'Failed to fetch meeting attendees.' });
+  }
+});
+
+// POST: Schedule a meeting
+app.post('/schedule-meeting', async (req, res) => {
+  const { title, start_datetime, end_datetime, description, attendees } = req.body;
+
+  try {
+    await sql.connect(config1);
+    const query = `
+            INSERT INTO MEETING (TITLE, START_DATETIME, END_DATETIME, DESCRIPTION, ATTENDEES)
+            VALUES (@title, @start_datetime, @end_datetime, @description, @attendees)
+        `;
+    const request = new sql.Request();
+    request.input('title', sql.VarChar(255), title);
+    request.input('start_datetime', sql.DateTime, start_datetime);
+    request.input('end_datetime', sql.DateTime, end_datetime);
+    request.input('description', sql.VarChar(1000), description);
+    request.input('attendees', sql.VarChar(50), attendees.join(','));
+
+    await request.query(query);
+    res.json({ message: 'Meeting scheduled successfully!' });
+  } catch (error) {
+    console.error('Error scheduling meeting:', error);
+    res.status(500).json({ error: 'Failed to schedule the meeting.' });
+  }
+});
 
 
 
