@@ -671,9 +671,9 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
   try {
     console.log('Starting calendar API...');
 
-    // Connect to the first database (config1) for leaves, holidays, and meetings
+    // Connect to the database for leaves, holidays, meetings, and attendance
     const pool = await sql.connect(config1);
-    console.log('Connected to the first database (config1).');
+    console.log('Connected to the database.');
 
     // Fetch employee leaves
     const leaveResult = await pool.request()
@@ -749,8 +749,28 @@ app.get('/calendar', authenticateJWT, authorizeEmployee, async (req, res) => {
       attendees: row.ATTENDEES.split(',')
     }));
 
+    // Fetch attendance records
+    const attendanceResult = await pool.request()
+      .input('empl_code', sql.VarChar, empl_code)
+      .query(`
+        SELECT 
+          ATTENDANCE_DATE,
+          STATUS
+        FROM [dbo].[ATTENDANCE]
+        WHERE EMPL_CODE = @empl_code
+        ORDER BY ATTENDANCE_DATE ASC;
+      `);
+
+    console.log('Fetched attendance:', attendanceResult.recordset);
+
+    const attendance = attendanceResult.recordset.map(row => ({
+      type: 'attendance',
+      date: row.ATTENDANCE_DATE,
+      status: row.STATUS
+    }));
+
     // Combine and sort all calendar entries
-    const calendar = [...leaves, ...holidays, ...meetings].sort((a, b) =>
+    const calendar = [...leaves, ...holidays, ...meetings, ...attendance].sort((a, b) =>
       new Date(a.startDate || a.date || a.startTime) - new Date(b.startDate || b.date || b.startTime)
     );
 
